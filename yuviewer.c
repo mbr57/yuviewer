@@ -8,6 +8,11 @@
 
 #define MAX_HEADER_SIZE 1000
 
+/* chroma subsampling modes */
+#define C420 0
+#define C422 1
+#define C444 2
+
 struct yuv_header {
     int w;
     int h;
@@ -28,6 +33,9 @@ void read_header(FILE *fp, struct yuv_header *header) {
         header_buffer[i++] = c;
     }
     header_buffer[i] = '\0';
+
+    /* default C value*/
+    header->c = C420;
 
     char *token = strtok(header_buffer, " ");
     while (token != NULL) {
@@ -52,6 +60,14 @@ void read_header(FILE *fp, struct yuv_header *header) {
                 }
                 header->f_num = atoi(token + 1);
                 header->f_den = atoi(token + j + 1);
+            case 'C':
+                if (strcmp(token + 1, "420") == 0) {
+                    header->c = C420;
+                } else if (strcmp(token + 1, "422") == 0) {
+                    header->c = C422;
+                } else if (strcmp(token + 1, "444") == 0) {
+                    header->c = C444;
+                }
         }
         token = strtok(NULL, " ");
     }
@@ -87,6 +103,40 @@ uint32_t yuv_to_rgb(uint8_t y, uint8_t u, uint8_t v)
     return (0xff << 24) | (r << 16) | (g << 8) | b;
 }
 
+void get_lengths(int *y_len, int *u_len, int *v_len, int w, int h, int mode)
+{
+    if (mode == C420) {
+        *y_len = w * h;
+        *u_len = w * h / 4;
+        *v_len = *u_len;
+    } else if (mode == C422) {
+        *y_len = w * h;
+        *u_len = w * h / 2;
+        *v_len = *u_len;
+    } else if (mode == C444) {
+        *y_len = w * h;
+        *u_len = *y_len;
+        *v_len = *y_len;
+    }
+}
+
+void read_pixel(uint8_t *y_frame, uint8_t *u_frame, uint8_t *v_frame, uint8_t *y, uint8_t *u, uint8_t *v, int j, int i, int w, int mode)
+{
+    if (mode == C420) {
+        *y = y_frame[w * i + j];
+        *u = u_frame[(w >> 1) * (i >> 1) + (j >> 1)];
+        *v = v_frame[(w >> 1) * (i >> 1) + (j >> 1)];
+    } else if (mode == C422) {
+        *y = y_frame[w * i + j];
+        *u = u_frame[(w >> 1) * i + (j >> 1)];
+        *v = v_frame[(w >> 1) * i + (j >> 1)];
+    } else if (mode == C444) {
+        *y = y_frame[w * i + j];
+        *u = u_frame[w * i + j];
+        *v = v_frame[w * i + j];
+    }
+}
+
 int main(int argc, char **argv)
 {
     char *filename;
@@ -94,6 +144,10 @@ int main(int argc, char **argv)
     struct yuv_header header;
     int r, g, b;
     uint8_t y, u, v;
+    int y_frame_length, u_frame_length, v_frame_length;
+    uint64_t frame_start, frame_end, elapsed;
+    float to_wait;
+    int run;
 
     SDL_Event event;
     SDL_Renderer *renderer;
@@ -118,10 +172,10 @@ int main(int argc, char **argv)
     printf("Height: %d\n", header.h);
     printf("FPS: %f\n", fps);
     printf("Aspect ratio: %f\n", aspect_ratio);
+    printf("Interlacing: %c\n", header.interlacing);
+    printf("C: %d\n", header.c);
 
-    int y_frame_length = header.w * header.h;
-    int u_frame_length = header.w * header.h / 4;
-    int v_frame_length = u_frame_length;
+    get_lengths(&y_frame_length, &u_frame_length, &v_frame_length, header.w, header.h, header.c);
 
     y_frame = malloc(y_frame_length * sizeof(char));
     u_frame = malloc(u_frame_length * sizeof(char));
@@ -132,17 +186,16 @@ int main(int argc, char **argv)
     SDL_Rect frame_rect = {.x = 0, .y = 0, .w = (500 * aspect_ratio), .h = 500};
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
     SDL_RenderClear(renderer);
-
     SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, header.w, header.h);
     uint32_t *video_buffer = malloc(header.w * header.h * sizeof(uint32_t));
 
-    while (read_frame(fp, y_frame, u_frame, v_frame, y_frame_length, u_frame_length, v_frame_length) == 1) {
+    run = 1;
+    while (run && read_frame(fp, y_frame, u_frame, v_frame, y_frame_length, u_frame_length, v_frame_length) == 1) {
+        frame_start = SDL_GetPerformanceCounter();
+        /* fill the video buffer */
         for (int i = 0; i < header.h; i++) {
             for (int j = 0; j < header.w; j++) {
-                y = y_frame[header.w * i + j];
-                u = u_frame[(header.w >> 1) * (i >> 1) + (j >> 1)];
-                v = v_frame[(header.w >> 1) * (i >> 1) + (j >> 1)];
-
+                read_pixel(y_frame, u_frame, v_frame, &y, &u, &v, j, i, header.w, header.c);
                 video_buffer[header.w * i + j] = yuv_to_rgb(y, u, v);
             }
         }
@@ -154,9 +207,14 @@ int main(int argc, char **argv)
         SDL_RenderPresent(renderer);
         
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT) return 0;
+            if (event.type == SDL_QUIT) run = 0;
         }
-        SDL_Delay(1000.0 / fps);
+
+        frame_end = SDL_GetPerformanceCounter();
+        elapsed = frame_end - frame_start;
+        to_wait = (1000.0 / fps) - 1000.0 * ((float)elapsed / SDL_GetPerformanceFrequency());
+        if (to_wait < 0.0) to_wait = 0.0;
+        SDL_Delay(to_wait);
     }
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
