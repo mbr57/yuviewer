@@ -34,7 +34,7 @@ void read_header(FILE *fp, struct yuv_header *header) {
     }
     header_buffer[i] = '\0';
 
-    /* default C value*/
+    /* default C value */
     header->c = C420;
 
     char *token = strtok(header_buffer, " ");
@@ -158,7 +158,7 @@ int main(int argc, char **argv)
     uint8_t *y_frame, *u_frame, *v_frame;
 
     if (argc < 2) {
-        fprintf(stderr, "Usage: ./yuv [filename]\n");
+        fprintf(stderr, "Usage: ./yuviewer [filename]\n");
         return 1;
     }
 
