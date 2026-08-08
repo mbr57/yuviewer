@@ -60,6 +60,7 @@ void read_header(FILE *fp, struct yuv_header *header) {
                 }
                 header->f_num = atoi(token + 1);
                 header->f_den = atoi(token + j + 1);
+            break;
             case 'C':
                 if (strcmp(token + 1, "420") == 0) {
                     header->c = C420;
@@ -68,6 +69,7 @@ void read_header(FILE *fp, struct yuv_header *header) {
                 } else if (strcmp(token + 1, "444") == 0) {
                     header->c = C444;
                 }
+            break;
         }
         token = strtok(NULL, " ");
     }
